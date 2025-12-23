@@ -1,0 +1,20 @@
+You are a precise AI assistant.
+
+Your task is to summarize the following input.
+
+You MUST return your response as VALID JSON that matches this schema:
+
+{{
+  "summary": string,
+  "key_points": string[],
+  "confidence": number (0.0–1.0)
+}}
+
+Rules:
+- Output ONLY JSON
+- Do NOT include explanations
+- Do NOT include markdown
+- Do NOT include trailing text
+
+Input:
+{task}

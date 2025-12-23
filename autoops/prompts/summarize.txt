@@ -1,0 +1,8 @@
+Return JSON in this format:
+{{
+  "summary": "<string>",
+  "confidence": <float>
+}}
+
+Task:
+{task}

@@ -1,0 +1,2 @@
+You are an AI planner.
+Task: {task}
