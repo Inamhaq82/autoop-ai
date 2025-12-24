@@ -1,16 +1,21 @@
 from pathlib import Path
 
-def load_prompt(prompt_name: str, **kwargs) -> str:
-    """
-    Loads a prompt template from disk and fills in placeholders.
+PROMPT_DIR = Path(__file__).parent.parent / "prompts"
 
-    Why this exists:
-    - Keeps prompts out of code
-    - Enables prompt versioning
-    - Prevents hard-coded strings
+def load_prompt(name: str, *, version: str = "v1", **kwargs) -> str:
     """
+    Reason:
+    - Prompts must be versioned and reproducible.
+    Benefit:
+    - You can A/B test prompts, roll back, and run evals across versions.
+    """
+    # supports both:
+    # 1) autoops/prompts/name/v1.txt
+    # 2) legacy autoops/prompts/name.txt  (fallback)
+    versioned_path = PROMPT_DIR / name / f"{version}.txt"
+    legacy_path = PROMPT_DIR / f"{name}.txt"
 
-    prompt_path = Path(__file__).parent.parent / "prompts" / f"{prompt_name}.txt"
+    prompt_path = versioned_path if versioned_path.exists() else legacy_path
 
     with open(prompt_path, "r", encoding="utf-8") as f:
         template = f.read()

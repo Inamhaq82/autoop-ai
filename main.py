@@ -1,15 +1,19 @@
 from autoops.llm.client import OpenAIClient
 from autoops.core.prompt_loader import load_prompt
 from autoops.core.schemas import TaskSummary
+from autoops.infra.ids import new_run_id
 
 
 def main():
     # 1️⃣ Initialize the LLM client FIRST
+    run_id = new_run_id()
     client = OpenAIClient()
 
     # 2️⃣ Load the schema-aware prompt
     prompt = load_prompt(
-        "task_summary_structured", task="Explain schema-first design in AI systems"
+        "task_summary_structured",
+        task="Explain schema-first design in AI systems",
+        version="v2",
     )
 
     # 3️⃣ Generate structured output with retry + repair

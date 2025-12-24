@@ -4,7 +4,7 @@ from typing import Any
 from typing import Type, TypeVar
 from pydantic import BaseModel
 from openai import OpenAI
-
+from autoops.infra.logging import log_event
 from autoops.core.prompt_loader import load_prompt
 from autoops.core.llm_output import (
     parse_and_validate,
@@ -26,6 +26,10 @@ class OpenAIClient(LLMClient):
         self.max_attempts = 3
         self.base_backoff_seconds = 1.0
         self.repair_enabled = True
+        self.model = "gpt-4o-mini"
+        self.temperature = 0.0
+        self.top_p = 1.0
+        self.max_output_tokens = 400
 
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -75,6 +79,13 @@ class OpenAIClient(LLMClient):
 
         for attempt in range(1, self.max_attempts + 1):
             try:
+                log_event(
+                    "llm_attempt",
+                    attempt=attempt,
+                    max_attempts=self.max_attempts,
+                    model=self.model,
+                    temperature=self.temperature,
+                )
                 print(f"[LLM] attempt={attempt}/{self.max_attempts}")
 
                 raw_output = self.generate(prompt)  # uses your existing cost tracking
@@ -118,7 +129,7 @@ class OpenAIClient(LLMClient):
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
+            temperature=self.temperature,
         )
 
         latency = time.time() - start

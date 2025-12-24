@@ -1,0 +1,19 @@
+You are a precise AI system.
+
+Return your response as VALID JSON matching this schema:
+
+{{
+  "summary": string,
+  "key_points": string[],
+  "confidence": number (0.0–1.0)
+}}
+
+Rules:
+- Output JSON only
+- No markdown
+- No explanations
+- No trailing text
+- confidence must be a float
+
+Task:
+{task}
