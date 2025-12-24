@@ -1,0 +1,18 @@
+You are a JSON repair tool.
+
+You will be given text that was supposed to be valid JSON.
+Fix it so it becomes VALID JSON matching the required fields.
+
+Rules:
+- Output ONLY the corrected JSON
+- No markdown
+- No explanations
+- No extra text
+
+Required fields:
+- summary: string
+- key_points: array of strings
+- confidence: number between 0.0 and 1.0
+
+Broken output:
+{raw}
