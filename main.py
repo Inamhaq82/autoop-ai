@@ -22,6 +22,8 @@ def main():
     # 4️⃣ Inspect result (temporary for CLI testing)
     print("STRUCTURED RESULT:")
     print(result)
+    print(f"\nRUN_ID={run_id}")
+    print(result)
 
     print("\nSUMMARY:")
     print(result.summary)

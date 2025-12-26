@@ -55,8 +55,12 @@ class OpenAIClient(LLMClient):
         self.total_tokens += tokens_used
         self.total_cost += cost
 
-        print(
-            f"[LLM] tokens={tokens_used} | cost=${cost:.6f} | total=${self.total_cost:.6f}"
+        log_event(
+            "llm_usage",
+            tokens=tokens_used,
+            cost=cost,
+            total_tokens=self.total_tokens,
+            total_cost=self.total_cost,
         )
 
         return response.choices[0].message.content
@@ -86,14 +90,16 @@ class OpenAIClient(LLMClient):
                     model=self.model,
                     temperature=self.temperature,
                 )
-                print(f"[LLM] attempt={attempt}/{self.max_attempts}")
 
                 raw_output = self.generate(prompt)  # uses your existing cost tracking
                 return parse_and_validate(raw_output, schema)
 
             except (LLMInvalidJSON, LLMSchemaViolation) as e:
                 last_error = e
-                print(f"[LLM] validation_error={type(e).__name__}")
+                log_event(
+                    "llm_validation_error",
+                    error_type=type(e).__name__,
+                )
 
                 if self.repair_enabled and raw_output:
                     repaired = self._repair_json(raw_output, schema)
@@ -101,7 +107,10 @@ class OpenAIClient(LLMClient):
                         return parse_and_validate(repaired, schema)
                     except Exception as e2:
                         last_error = e2
-                        print(f"[LLM] repair_failed={type(e2).__name__}")
+                        log_event(
+                            "llm_repair_failed",
+                            error_type=type(e2).__name__,
+                        )
 
                 # backoff before retry
                 self._backoff(attempt)
@@ -109,7 +118,10 @@ class OpenAIClient(LLMClient):
             except Exception as e:
                 # Covers transient OpenAI/network issues
                 last_error = e
-                print(f"[LLM] transient_error={type(e).__name__}")
+                log_event(
+                    "llm_transient_error",
+                    error_type=type(e).__name__,
+                )
                 self._backoff(attempt)
 
         # Exhausted attempts
@@ -133,7 +145,10 @@ class OpenAIClient(LLMClient):
         )
 
         latency = time.time() - start
-        print(f"[LLM] latency={latency:.2f}s")
+        log_event(
+            "llm_latency",
+            seconds=latency,
+        )
 
         return response
 
@@ -142,7 +157,10 @@ class OpenAIClient(LLMClient):
         Exponential backoff to reduce pressure on the API and avoid rate limits.
         """
         delay = self.base_backoff_seconds * (2 ** (attempt - 1))
-        print(f"[LLM] backoff_seconds={delay:.2f}")
+        log_event(
+            "llm_backoff",
+            delay=delay,
+        )
         time.sleep(delay)
 
     def _repair_json(self, raw_output: str, schema: Type[T]) -> str:
@@ -155,8 +173,8 @@ class OpenAIClient(LLMClient):
         )
 
         repair_prompt = load_prompt("json_repair", schema=schema_hint, raw=raw_output)
+        log_event("llm_repair_attempt", reason="schema_violation")
 
-        print("[LLM] running_json_repair_pass=true")
         repaired = self.generate(repair_prompt)
 
         return repaired
