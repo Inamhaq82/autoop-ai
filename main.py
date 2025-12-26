@@ -1,36 +1,22 @@
 from autoops.llm.client import OpenAIClient
-from autoops.core.prompt_loader import load_prompt
-from autoops.core.schemas import TaskSummary
-from autoops.infra.ids import new_run_id
+from autoops.core.tool_router import ToolRegistry
+from autoops.core.tool_pipeline import select_and_run_tool
+from autoops.tools.text_tools import summarize_text_local
 
 
 def main():
-    # 1️⃣ Initialize the LLM client FIRST
-    run_id = new_run_id()
     client = OpenAIClient()
 
-    # 2️⃣ Load the schema-aware prompt
-    prompt = load_prompt(
-        "task_summary_structured",
-        task="Explain schema-first design in AI systems",
-        version="v2",
-    )
+    # Register tools (allowlist)
+    registry = ToolRegistry()
+    registry.register("summarize_text_local", summarize_text_local)
 
-    # 3️⃣ Generate structured output with retry + repair
-    result = client.generate_structured(prompt, TaskSummary)
+    user_request = "Summarize this text in 2 sentences: Day 10 introduces tool calling so the model can request functions with structured inputs. We validate the request and execute a safe allowlisted tool. This enables agents."
 
-    # 4️⃣ Inspect result (temporary for CLI testing)
-    print("STRUCTURED RESULT:")
+    result = select_and_run_tool(client, registry, user_request)
+
+    print("TOOL RESULT:")
     print(result)
-    print(f"\nRUN_ID={run_id}")
-    print(result)
-
-    print("\nSUMMARY:")
-    print(result.summary)
-
-    print("\nKEY POINTS:")
-    for p in result.key_points:
-        print("-", p)
 
 
 if __name__ == "__main__":
