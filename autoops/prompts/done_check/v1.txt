@@ -1,0 +1,18 @@
+You are a completion checker.
+
+Given the objective and current state, decide if the objective is satisfied.
+
+Rules:
+- Output JSON only
+- No markdown, no extra text
+- Use this schema exactly:
+{{
+  "done": boolean,
+  "rationale": string
+}}
+
+Objective:
+{objective}
+
+Current state notes:
+{notes}

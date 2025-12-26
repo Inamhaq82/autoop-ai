@@ -46,7 +46,9 @@ class ToolRegistry:
                 )
             return ToolResult(tool_name=tool_name, ok=True, data=out)
         except TypeError as e:
-            return ToolResult(tool_name=tool_name, ok=False, error=f"Bad tool args: {e}")
+            return ToolResult(
+                tool_name=tool_name, ok=False, error=f"Bad tool args: {e}"
+            )
         except Exception as e:
             return ToolResult(
                 tool_name=tool_name,

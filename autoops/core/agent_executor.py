@@ -4,7 +4,7 @@ from autoops.core.tool_router import ToolRegistry
 from autoops.infra.ids import new_run_id
 
 
-def execute_plan(registry: ToolRegistry, plan: Plan) -> RunSummary:
+def execute_plan(registry: ToolRegistry, plan: Plan, *, run_id: str) -> RunSummary:
     """
     Reason:
     - Central executor that runs validated plans step-by-step.
