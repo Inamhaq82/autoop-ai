@@ -39,6 +39,17 @@ def init_db() -> None:
             """
         )
         conn.commit()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tool_cache (
+                cache_key TEXT PRIMARY KEY,
+                tool_name TEXT NOT NULL,
+                args_json TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                created_ts REAL NOT NULL
+            )
+            """
+        )
 
 
 def save_run(
@@ -103,3 +114,59 @@ def load_run(run_id: str) -> Optional[Dict[str, Any]]:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
     return dict(row) if row else None
+
+
+import hashlib
+
+
+def _stable_json(obj: Any) -> str:
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False)
+
+
+def make_cache_key(tool_name: str, args: Dict[str, Any]) -> str:
+    """
+    Reason:
+    - Tool cache must be deterministic across runs.
+    Benefit:
+    - Same tool+args -> same cache key.
+    """
+    payload = tool_name + ":" + _stable_json(args)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def get_cached_tool_result(
+    tool_name: str, args: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    init_db()
+    cache_key = make_cache_key(tool_name, args)
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT result_json FROM tool_cache WHERE cache_key = ?",
+            (cache_key,),
+        ).fetchone()
+    if not row:
+        return None
+    return json.loads(row["result_json"])
+
+
+def set_cached_tool_result(
+    tool_name: str, args: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    init_db()
+    cache_key = make_cache_key(tool_name, args)
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO tool_cache
+            (cache_key, tool_name, args_json, result_json, created_ts)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                cache_key,
+                tool_name,
+                _stable_json(args),
+                _stable_json(result),
+                time.time(),
+            ),
+        )
+        conn.commit()

@@ -32,6 +32,7 @@ def run_agent_loop(
     """
     run_id = new_run_id()
     state = AgentState()
+    executed_steps_log: list[dict] = []
     final_answer = None
 
     log_event(
@@ -75,6 +76,7 @@ def run_agent_loop(
                     }
                 )
                 state.notes.append(f"Step {step.step_id} ({step.tool_name}) succeeded.")
+                executed_steps_log.extend([s.model_dump() for s in summary.steps])
             else:
                 state.last_tool_results.append(
                     {
@@ -86,6 +88,7 @@ def run_agent_loop(
                 state.notes.append(
                     f"Step {step.step_id} ({step.tool_name}) failed: {step.error}"
                 )
+                executed_steps_log.extend([s.model_dump() for s in summary.steps])
 
         log_event(
             "agent_state_updated",
@@ -131,7 +134,7 @@ def run_agent_loop(
                 iterations=result.iterations,
                 final_answer=result.final_answer,
                 state=result.state.model_dump(),
-                steps=result.state.last_tool_results,  # minimal step log; see Step 4 for full
+                steps=executed_steps_log,  # minimal step log; see Step 4 for full
                 total_tokens=getattr(client, "total_tokens", None),
                 total_cost=getattr(client, "total_cost", None),
             )

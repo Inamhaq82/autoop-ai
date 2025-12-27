@@ -1,5 +1,6 @@
 from typing import Callable, Dict, Any
-
+from autoops.infra.storage import get_cached_tool_result, set_cached_tool_result
+from autoops.infra.logging import log_event
 from autoops.core.tool_schemas import ToolResult
 
 ToolFn = Callable[..., Dict[str, Any]]
@@ -38,12 +39,21 @@ class ToolRegistry:
             return ToolResult(tool_name=tool_name, ok=False, error="Unknown tool")
 
         fn = self._tools[tool_name]
+
+        cached = get_cached_tool_result(tool_name, args)
+        if cached is not None:
+            log_event("tool_cache_hit", tool_name=tool_name)
+            return ToolResult(tool_name=tool_name, ok=True, data=cached)
+        else:
+            log_event("tool_cache_miss", tool_name=tool_name)
+
         try:
             out = fn(**args)
             if not isinstance(out, dict):
                 return ToolResult(
                     tool_name=tool_name, ok=False, error="Tool returned non-dict output"
                 )
+                set_cached_tool_result(tool_name, args, out)
             return ToolResult(tool_name=tool_name, ok=True, data=out)
         except TypeError as e:
             return ToolResult(
