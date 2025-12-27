@@ -1,4 +1,5 @@
 import json
+from unittest import result
 
 from autoops.infra.ids import new_run_id
 from autoops.infra.logging import log_event
@@ -7,6 +8,7 @@ from autoops.core.agent_schemas import Plan
 from autoops.core.agent_executor import execute_plan
 from autoops.core.agent_loop_schemas import AgentState, DoneCheck, AgentRunResult
 from autoops.core.tool_router import ToolRegistry
+from autoops.infra.storage import save_run
 
 
 def _format_notes(notes: list[str]) -> str:
@@ -32,7 +34,12 @@ def run_agent_loop(
     state = AgentState()
     final_answer = None
 
-    log_event("agent_loop_start", run_id=run_id, objective=objective, max_iterations=max_iterations)
+    log_event(
+        "agent_loop_start",
+        run_id=run_id,
+        objective=objective,
+        max_iterations=max_iterations,
+    )
 
     for iteration in range(1, max_iterations + 1):
         log_event("agent_iteration_start", run_id=run_id, iteration=iteration)
@@ -47,7 +54,12 @@ def run_agent_loop(
         )
         plan = client.generate_structured(replanner_prompt, Plan)
 
-        log_event("agent_plan_created", run_id=run_id, iteration=iteration, steps=len(plan.steps))
+        log_event(
+            "agent_plan_created",
+            run_id=run_id,
+            iteration=iteration,
+            steps=len(plan.steps),
+        )
 
         # 2) Execute plan
         summary = execute_plan(registry, plan, run_id=run_id)
@@ -56,16 +68,31 @@ def run_agent_loop(
         for step in summary.steps:
             if step.ok:
                 state.last_tool_results.append(
-                    {"step_id": step.step_id, "tool_name": step.tool_name, "data": step.data}
+                    {
+                        "step_id": step.step_id,
+                        "tool_name": step.tool_name,
+                        "data": step.data,
+                    }
                 )
                 state.notes.append(f"Step {step.step_id} ({step.tool_name}) succeeded.")
             else:
                 state.last_tool_results.append(
-                    {"step_id": step.step_id, "tool_name": step.tool_name, "error": step.error}
+                    {
+                        "step_id": step.step_id,
+                        "tool_name": step.tool_name,
+                        "error": step.error,
+                    }
                 )
-                state.notes.append(f"Step {step.step_id} ({step.tool_name}) failed: {step.error}")
+                state.notes.append(
+                    f"Step {step.step_id} ({step.tool_name}) failed: {step.error}"
+                )
 
-        log_event("agent_state_updated", run_id=run_id, iteration=iteration, notes_count=len(state.notes))
+        log_event(
+            "agent_state_updated",
+            run_id=run_id,
+            iteration=iteration,
+            notes_count=len(state.notes),
+        )
 
         # 4) Done check
         done_prompt = load_prompt(
@@ -85,9 +112,10 @@ def run_agent_loop(
         )
 
         if done_check.done:
-            final_answer = done_check.rationale  # simple: use rationale as final text for now
-            log_event("agent_loop_done", run_id=run_id, iteration=iteration)
-            return AgentRunResult(
+            final_answer = done_check.rationale
+
+            result = AgentRunResult(
+                run_id=run_id,
                 ok=True,
                 objective=objective,
                 iterations=iteration,
@@ -95,12 +123,38 @@ def run_agent_loop(
                 final_answer=final_answer,
             )
 
-    # Hit max iterations
-    log_event("agent_loop_max_iterations", run_id=run_id, iterations=max_iterations)
-    return AgentRunResult(
-        ok=False,
-        objective=objective,
-        iterations=max_iterations,
-        state=state,
-        final_answer=final_answer,
-    )
+            # Persist run
+            save_run(
+                run_id=run_id,
+                objective=objective,
+                ok=result.ok,
+                iterations=result.iterations,
+                final_answer=result.final_answer,
+                state=result.state.model_dump(),
+                steps=result.state.last_tool_results,  # minimal step log; see Step 4 for full
+                total_tokens=getattr(client, "total_tokens", None),
+                total_cost=getattr(client, "total_cost", None),
+            )
+
+            result = AgentRunResult(
+                run_id=run_id,
+                ok=False,
+                objective=objective,
+                iterations=max_iterations,
+                state=state,
+                final_answer=final_answer,
+            )
+
+            save_run(
+                run_id=run_id,
+                objective=objective,
+                ok=result.ok,
+                iterations=result.iterations,
+                final_answer=result.final_answer,
+                state=result.state.model_dump(),
+                steps=result.state.last_tool_results,
+                total_tokens=getattr(client, "total_tokens", None),
+                total_cost=getattr(client, "total_cost", None),
+            )
+
+    return result

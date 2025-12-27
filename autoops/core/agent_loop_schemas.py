@@ -11,6 +11,7 @@ class AgentState(BaseModel):
     Benefit:
     - Enables replanning based on tool results (not guesswork).
     """
+
     notes: List[str] = Field(default_factory=list)
     last_tool_results: List[Dict[str, Any]] = Field(default_factory=list)
 
@@ -24,6 +25,7 @@ class DoneCheck(BaseModel):
     Benefit:
     - Deterministic stop condition with structured output.
     """
+
     done: bool
     rationale: str
 
@@ -37,9 +39,10 @@ class AgentRunResult(BaseModel):
     Benefit:
     - Easy to persist and compare across runs.
     """
+
+    run_id: str
     ok: bool
     objective: str
     iterations: int
     state: AgentState
     final_answer: Optional[str] = None
-
