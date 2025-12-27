@@ -6,6 +6,8 @@ from autoops.core.tool_router import ToolRegistry
 from autoops.tools.text_tools import summarize_text_local
 from autoops.core.agent_loop import run_agent_loop
 import datetime as dt
+from autoops.infra.storage import save_eval, load_eval
+from autoops.core.evaluator import evaluate_run
 
 
 def jaccard_similarity(a: str, b: str) -> float:
@@ -43,6 +45,20 @@ def main():
     p_cmp = sub.add_parser("compare")
     p_cmp.add_argument("old_run_id")
     p_cmp.add_argument("new_run_id")
+
+    p_eval = sub.add_parser("eval")
+    p_eval.add_argument("run_id")
+    p_eval.add_argument("--budget", type=float, default=0.05)
+
+    p_ce = sub.add_parser("compare_eval")
+    p_ce.add_argument("old_run_id")
+    p_ce.add_argument("new_run_id")
+
+    p_gate = sub.add_parser("gate")
+    p_gate.add_argument("old_run_id")
+    p_gate.add_argument("new_run_id")
+    p_gate.add_argument("--max_quality_drop", type=float, default=0.10)
+    p_gate.add_argument("--max_cost_increase_pct", type=float, default=50.0)
 
     args = parser.parse_args()
 
@@ -109,6 +125,92 @@ def main():
         print("Tokens:", old_tokens, "->", new_tokens, "Δ", (new_tokens - old_tokens))
         print("Cost:", old_cost, "->", new_cost, "Δ", (new_cost - old_cost))
         print("Final answer similarity (Jaccard):", round(sim, 3))
+    elif args.cmd == "eval":
+        run = load_run(args.run_id)
+        if not run:
+            print("Run not found")
+            return
+        report = evaluate_run(run, cost_budget=args.budget)
+        save_eval(args.run_id, report)
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+
+    elif args.cmd == "compare_eval":
+        old = load_eval(args.old_run_id) or evaluate_run(load_run(args.old_run_id))
+        new = load_eval(args.new_run_id) or evaluate_run(load_run(args.new_run_id))
+        print(
+            "quality:",
+            old["quality_score"],
+            "->",
+            new["quality_score"],
+            "Δ",
+            new["quality_score"] - old["quality_score"],
+        )
+        print(
+            "structure:",
+            old["structure_score"],
+            "->",
+            new["structure_score"],
+            "Δ",
+            new["structure_score"] - old["structure_score"],
+        )
+        print(
+            "cost:",
+            old["cost_score"],
+            "->",
+            new["cost_score"],
+            "Δ",
+            new["cost_score"] - old["cost_score"],
+        )
+        print(
+            "stability:",
+            old["stability_score"],
+            "->",
+            new["stability_score"],
+            "Δ",
+            new["stability_score"] - old["stability_score"],
+        )
+
+    elif args.cmd == "gate":
+        old_run = load_run(args.old_run_id)
+        new_run = load_run(args.new_run_id)
+        if not old_run or not new_run:
+            print("Run not found")
+            raise SystemExit(2)
+
+        old = load_eval(args.old_run_id) or evaluate_run(old_run)
+        new = load_eval(args.new_run_id) or evaluate_run(new_run)
+
+        # Gates
+        quality_drop = old["quality_score"] - new["quality_score"]
+        cost_increase_pct = 0.0
+        old_cost = float(old_run.get("total_cost") or 0.0)
+        new_cost = float(new_run.get("total_cost") or 0.0)
+        if old_cost > 0:
+            cost_increase_pct = ((new_cost - old_cost) / old_cost) * 100.0
+        elif new_cost > 0:
+            cost_increase_pct = 999.0
+
+        ok_regressed = bool(old_run["ok"]) and not bool(new_run["ok"])
+
+        failed = False
+        if quality_drop > args.max_quality_drop:
+            print(
+                f"FAIL: quality dropped by {quality_drop:.3f} (> {args.max_quality_drop:.3f})"
+            )
+            failed = True
+        if cost_increase_pct > args.max_cost_increase_pct:
+            print(
+                f"FAIL: cost increased by {cost_increase_pct:.1f}% (> {args.max_cost_increase_pct:.1f}%)"
+            )
+            failed = True
+        if ok_regressed:
+            print("FAIL: run regressed from OK to FAIL")
+            failed = True
+
+        if failed:
+            raise SystemExit(1)
+
+        print("PASS: no regression detected")
 
 
 if __name__ == "__main__":

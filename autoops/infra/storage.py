@@ -50,6 +50,20 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evals (
+                run_id TEXT PRIMARY KEY,
+                created_ts REAL NOT NULL,
+                report_json TEXT NOT NULL,
+                quality_score REAL NOT NULL,
+                structure_score REAL NOT NULL,
+                cost_score REAL NOT NULL,
+                stability_score REAL NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES runs(run_id)
+            )
+            """
+        )
 
 
 def save_run(
@@ -114,6 +128,37 @@ def load_run(run_id: str) -> Optional[Dict[str, Any]]:
     with _connect() as conn:
         row = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
     return dict(row) if row else None
+
+
+def save_eval(run_id: str, report: Dict[str, Any]) -> None:
+    init_db()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO evals
+            (run_id, created_ts, report_json, quality_score, structure_score, cost_score, stability_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                time.time(),
+                json.dumps(report, ensure_ascii=False),
+                float(report["quality_score"]),
+                float(report["structure_score"]),
+                float(report["cost_score"]),
+                float(report["stability_score"]),
+            ),
+        )
+        conn.commit()
+
+
+def load_eval(run_id: str) -> Optional[Dict[str, Any]]:
+    init_db()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT report_json FROM evals WHERE run_id = ?", (run_id,)
+        ).fetchone()
+    return json.loads(row["report_json"]) if row else None
 
 
 import hashlib
