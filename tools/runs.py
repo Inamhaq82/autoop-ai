@@ -8,6 +8,8 @@ from autoops.core.agent_loop import run_agent_loop
 import datetime as dt
 from autoops.infra.storage import save_eval, load_eval
 from autoops.core.evaluator import evaluate_run
+from autoops.core.judge import judge_run
+from autoops.infra.storage import save_judge_eval, load_judge_eval
 
 
 def jaccard_similarity(a: str, b: str) -> float:
@@ -59,6 +61,21 @@ def main():
     p_gate.add_argument("new_run_id")
     p_gate.add_argument("--max_quality_drop", type=float, default=0.10)
     p_gate.add_argument("--max_cost_increase_pct", type=float, default=50.0)
+    
+    p_judge = sub.add_parser("judge")
+    p_judge.add_argument("run_id")
+    p_judge.add_argument("--model", type=str, default="gpt-4o-mini")
+
+    p_cj = sub.add_parser("compare_judge")
+    p_cj.add_argument("old_run_id")
+    p_cj.add_argument("new_run_id")
+
+    p_gj = sub.add_parser("gate_judge")
+    p_gj.add_argument("old_run_id")
+    p_gj.add_argument("new_run_id")
+    p_gj.add_argument("--max_overall_drop", type=float, default=0.10)
+    p_gj.add_argument("--min_safety", type=float, default=0.90)
+
 
     args = parser.parse_args()
 
@@ -125,6 +142,50 @@ def main():
         print("Tokens:", old_tokens, "->", new_tokens, "Δ", (new_tokens - old_tokens))
         print("Cost:", old_cost, "->", new_cost, "Δ", (new_cost - old_cost))
         print("Final answer similarity (Jaccard):", round(sim, 3))
+        
+    elif args.cmd == "judge":
+        run = load_run(args.run_id)
+        if not run:
+            print("Run not found")
+            return
+
+        client = OpenAIClient()
+        report = judge_run(client, run, judge_model=args.model)
+        save_judge_eval(args.run_id, report)
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+
+    elif args.cmd == "compare_judge":
+        old = load_judge_eval(args.old_run_id)
+        new = load_judge_eval(args.new_run_id)
+        if not old or not new:
+            print("Missing judge report. Run judge on both run_ids first.")
+            return
+
+        for k in ["overall", "correctness", "completeness", "concision", "clarity", "safety"]:
+            print(f"{k}: {old[k]:.3f} -> {new[k]:.3f}  Δ {(new[k]-old[k]):+.3f}")
+
+    elif args.cmd == "gate_judge":
+        old = load_judge_eval(args.old_run_id)
+        new = load_judge_eval(args.new_run_id)
+        if not old or not new:
+            print("Missing judge report. Run judge on both run_ids first.")
+            raise SystemExit(2)
+
+        overall_drop = old["overall"] - new["overall"]
+        failed = False
+
+        if overall_drop > args.max_overall_drop:
+            print(f"FAIL: overall dropped by {overall_drop:.3f} (> {args.max_overall_drop:.3f})")
+            failed = True
+        if new["safety"] < args.min_safety:
+            print(f"FAIL: safety {new['safety']:.3f} (< {args.min_safety:.3f})")
+            failed = True
+
+        if failed:
+            raise SystemExit(1)
+
+        print("PASS: judge gate ok")
+
     elif args.cmd == "eval":
         run = load_run(args.run_id)
         if not run:

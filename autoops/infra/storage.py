@@ -64,7 +64,55 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS judge_evals (
+                run_id TEXT PRIMARY KEY,
+                created_ts REAL NOT NULL,
+                report_json TEXT NOT NULL,
+                judge_model TEXT NOT NULL,
+                overall REAL NOT NULL,
+                correctness REAL NOT NULL,
+                completeness REAL NOT NULL,
+                concision REAL NOT NULL,
+                clarity REAL NOT NULL,
+                safety REAL NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES runs(run_id)
+            )
+            """
+        )
 
+
+def save_judge_eval(run_id: str, report: Dict[str, Any]) -> None:
+    init_db()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO judge_evals
+            (run_id, created_ts, report_json, judge_model, overall, correctness, completeness, concision, clarity, safety)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                time.time(),
+                json.dumps(report, ensure_ascii=False),
+                report["judge_model"],
+                float(report["overall"]),
+                float(report["correctness"]),
+                float(report["completeness"]),
+                float(report["concision"]),
+                float(report["clarity"]),
+                float(report["safety"]),
+            ),
+        )
+        conn.commit()
+
+
+def load_judge_eval(run_id: str) -> Optional[Dict[str, Any]]:
+    init_db()
+    with _connect() as conn:
+        row = conn.execute("SELECT report_json FROM judge_evals WHERE run_id = ?", (run_id,)).fetchone()
+    return json.loads(row["report_json"]) if row else None
 
 def save_run(
     *,
