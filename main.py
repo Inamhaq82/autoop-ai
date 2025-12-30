@@ -16,7 +16,10 @@ def main():
         "It uses a done-check schema to stop deterministically."
     )
 
-    result = run_agent_loop(client, registry, objective, max_iterations=3)
+    result = run_agent_loop(
+        client, registry, objective, max_iterations=3, planner_version="v2"
+    )
+
     print(result)
 
 

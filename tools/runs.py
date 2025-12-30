@@ -10,6 +10,8 @@ from autoops.infra.storage import save_eval, load_eval
 from autoops.core.evaluator import evaluate_run
 from autoops.core.judge import judge_run
 from autoops.infra.storage import save_judge_eval, load_judge_eval
+from autoops.core.memory import find_relevant_runs
+
 
 
 def jaccard_similarity(a: str, b: str) -> float:
@@ -32,6 +34,7 @@ def format_ts(ts: float | None) -> str:
 
 
 def main():
+    # Add Subcommands
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -75,10 +78,16 @@ def main():
     p_gj.add_argument("new_run_id")
     p_gj.add_argument("--max_overall_drop", type=float, default=0.10)
     p_gj.add_argument("--min_safety", type=float, default=0.90)
+    
+    p_mem = sub.add_parser("memory_search")
+    p_mem.add_argument("--objective", required=True)
+    p_mem.add_argument("--k", type=int, default=3)
+
+    
 
 
     args = parser.parse_args()
-
+# Add Handlers
     if args.cmd == "list":
         runs = list_runs(limit=args.limit)
         for r in runs:
@@ -230,6 +239,10 @@ def main():
             "Δ",
             new["stability_score"] - old["stability_score"],
         )
+
+    elif args.cmd == "memory_search":
+        mem = find_relevant_runs(args.objective, k=args.k, scan_limit=50)
+        print(json.dumps(mem, indent=2, ensure_ascii=False))
 
     elif args.cmd == "gate":
         old_run = load_run(args.old_run_id)

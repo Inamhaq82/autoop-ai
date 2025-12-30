@@ -11,8 +11,25 @@ Rules:
   "rationale": string
 }}
 
+Decision criteria (deterministic):
+- latest_tool_result is either null or an object with fields:
+  - tool_name
+  - data.summary (string)
+  - data.key_points (array of strings)
+- done=true if:
+  - latest_tool_result is not null
+  - latest_tool_result.data.summary is a non-empty string
+  - latest_tool_result.data.key_points is an array with length >= 2
+- If the objective asks for "2 sentences", accept 1-3 sentences in data.summary.
+- If done=true, include the summary and key points in the rationale.
+- If done=false, say exactly what is missing.
+
 Objective:
 {objective}
 
 Current state notes:
 {notes}
+
+Latest tool result (JSON object or null):
+{latest_tool_result}
+

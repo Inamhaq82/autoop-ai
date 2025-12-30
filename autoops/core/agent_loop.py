@@ -1,5 +1,4 @@
 import json
-from unittest import result
 
 from autoops.infra.ids import new_run_id
 from autoops.infra.logging import log_event
@@ -8,11 +7,58 @@ from autoops.core.agent_schemas import Plan
 from autoops.core.agent_executor import execute_plan
 from autoops.core.agent_loop_schemas import AgentState, DoneCheck, AgentRunResult
 from autoops.core.tool_router import ToolRegistry
-from autoops.infra.storage import save_run
+from autoops.infra.storage import save_run, migrate_db
+from autoops.core.memory import find_relevant_runs, format_memories
 
 
 def _format_notes(notes: list[str]) -> str:
     return "\n".join(f"- {n}" for n in notes) if notes else "- (none)"
+
+
+def deterministic_done_check(
+    objective: str, latest_tool_result: dict | None
+) -> DoneCheck:
+    """
+    Deterministic completion checker (no LLM).
+
+    Reason:
+    - Stop conditions are control logic; LLMs are not reliable for control flow.
+    Benefit:
+    - The agent stops as soon as the required fields exist (no hallucinated failures).
+    """
+    if not latest_tool_result:
+        return DoneCheck(done=False, rationale="No tool result available yet.")
+
+    data = latest_tool_result.get("data") or {}
+    summary = data.get("summary")
+    key_points = data.get("key_points")
+
+    if not isinstance(summary, str) or not summary.strip():
+        return DoneCheck(done=False, rationale="Missing data.summary.")
+    if not isinstance(key_points, list) or len(key_points) < 2:
+        return DoneCheck(
+            done=False, rationale="Missing data.key_points (need at least 2)."
+        )
+
+    # If objective mentions 2 sentences, accept 1–3 sentences (practical)
+    if "2 sentence" in objective.lower():
+        sentence_count = len(
+            [
+                s
+                for s in summary.replace("!", ".").replace("?", ".").split(".")
+                if s.strip()
+            ]
+        )
+        if sentence_count < 1 or sentence_count > 3:
+            return DoneCheck(
+                done=False,
+                rationale=f"Summary sentence count out of range (got {sentence_count}, expected 1–3).",
+            )
+
+    rationale = f"SUMMARY: {summary.strip()}\n" f"KEY POINTS:\n- " + "\n- ".join(
+        str(k).strip() for k in key_points if str(k).strip()
+    )
+    return DoneCheck(done=True, rationale=rationale)
 
 
 def run_agent_loop(
@@ -22,7 +68,6 @@ def run_agent_loop(
     *,
     max_iterations: int = 3,
     planner_version: str = "v1",
-    done_check_version: str = "v1",
 ) -> AgentRunResult:
     """
     Reason:
@@ -31,9 +76,30 @@ def run_agent_loop(
     - Agent adapts based on tool results and stops deterministically.
     """
     run_id = new_run_id()
+
+    # Ensure DB migrations are applied (memory_used_json, etc.)
+    migrate_db()
+
+    # Compute objective payload once per run (stable input)
+    objective_payload = (
+        objective.split(":", 1)[1].strip() if ":" in objective else objective
+    )
+
+    # Retrieve memory once per run
+    memories = find_relevant_runs(objective, k=3, scan_limit=50)
+    memory_used = [m["run_id"] for m in memories]
+    memories_text = format_memories(memories)
+
+    log_event(
+        "memory_retrieved",
+        run_id=run_id,
+        count=len(memories),
+        memory_used=memory_used,
+    )
+
     state = AgentState()
     executed_steps_log: list[dict] = []
-    final_answer = None
+    final_answer: str | None = None
 
     log_event(
         "agent_loop_start",
@@ -45,14 +111,19 @@ def run_agent_loop(
     for iteration in range(1, max_iterations + 1):
         log_event("agent_iteration_start", run_id=run_id, iteration=iteration)
 
-        # 1) Create plan from replanner (uses state)
+        # 1) Create plan
         replanner_prompt = load_prompt(
             "replanner",
             version=planner_version,
             objective=objective,
+            objective_payload=objective_payload,
             notes=_format_notes(state.notes),
             last_tool_results=json.dumps(state.last_tool_results, ensure_ascii=False),
+            memories=(
+                "(none)" if iteration == 1 else memories_text
+            ),  # reduce memory hijack on iter 1
         )
+
         plan = client.generate_structured(replanner_prompt, Plan)
 
         log_event(
@@ -62,10 +133,19 @@ def run_agent_loop(
             steps=len(plan.steps),
         )
 
+        # Hard override for summarize tool args (bulletproof against planner drift)
+        for step in plan.steps:
+            if step.tool_name == "summarize_text_local":
+                step.args["text"] = objective_payload
+                step.args["max_sentences"] = 2
+
         # 2) Execute plan
         summary = execute_plan(registry, plan, run_id=run_id)
 
-        # 3) Observe: update state from tool results
+        # Record executed steps once per iteration
+        executed_steps_log.extend([s.model_dump() for s in summary.steps])
+
+        # 3) Observe: update state
         for step in summary.steps:
             if step.ok:
                 state.last_tool_results.append(
@@ -76,7 +156,6 @@ def run_agent_loop(
                     }
                 )
                 state.notes.append(f"Step {step.step_id} ({step.tool_name}) succeeded.")
-                executed_steps_log.extend([s.model_dump() for s in summary.steps])
             else:
                 state.last_tool_results.append(
                     {
@@ -88,7 +167,6 @@ def run_agent_loop(
                 state.notes.append(
                     f"Step {step.step_id} ({step.tool_name}) failed: {step.error}"
                 )
-                executed_steps_log.extend([s.model_dump() for s in summary.steps])
 
         log_event(
             "agent_state_updated",
@@ -97,14 +175,12 @@ def run_agent_loop(
             notes_count=len(state.notes),
         )
 
-        # 4) Done check
-        done_prompt = load_prompt(
-            "done_check",
-            version=done_check_version,
-            objective=objective,
-            notes=_format_notes(state.notes),
+        latest_tool_result = (
+            state.last_tool_results[-1] if state.last_tool_results else None
         )
-        done_check = client.generate_structured(done_prompt, DoneCheck)
+
+        # 4) Deterministic done check (no LLM)
+        done_check = deterministic_done_check(objective, latest_tool_result)
 
         log_event(
             "agent_done_check",
@@ -126,7 +202,6 @@ def run_agent_loop(
                 final_answer=final_answer,
             )
 
-            # Persist run
             save_run(
                 run_id=run_id,
                 objective=objective,
@@ -134,30 +209,35 @@ def run_agent_loop(
                 iterations=result.iterations,
                 final_answer=result.final_answer,
                 state=result.state.model_dump(),
-                steps=executed_steps_log,  # minimal step log; see Step 4 for full
+                steps=executed_steps_log,
                 total_tokens=getattr(client, "total_tokens", None),
                 total_cost=getattr(client, "total_cost", None),
+                memory_used=memory_used,
             )
 
-            result = AgentRunResult(
-                run_id=run_id,
-                ok=False,
-                objective=objective,
-                iterations=max_iterations,
-                state=state,
-                final_answer=final_answer,
-            )
+            return result
 
-            save_run(
-                run_id=run_id,
-                objective=objective,
-                ok=result.ok,
-                iterations=result.iterations,
-                final_answer=result.final_answer,
-                state=result.state.model_dump(),
-                steps=result.state.last_tool_results,
-                total_tokens=getattr(client, "total_tokens", None),
-                total_cost=getattr(client, "total_cost", None),
-            )
+    # Exhausted iterations: persist failure + return
+    result = AgentRunResult(
+        run_id=run_id,
+        ok=False,
+        objective=objective,
+        iterations=max_iterations,
+        state=state,
+        final_answer=final_answer,
+    )
+
+    save_run(
+        run_id=run_id,
+        objective=objective,
+        ok=result.ok,
+        iterations=result.iterations,
+        final_answer=result.final_answer,
+        state=result.state.model_dump(),
+        steps=executed_steps_log,
+        total_tokens=getattr(client, "total_tokens", None),
+        total_cost=getattr(client, "total_cost", None),
+        memory_used=memory_used,
+    )
 
     return result

@@ -34,11 +34,11 @@ def init_db() -> None:
                 state_json TEXT NOT NULL,
                 steps_json TEXT NOT NULL,
                 total_tokens INTEGER,
-                total_cost REAL
+                total_cost REAL,
+                memory_used_json TEXT NOT NULL DEFAULT '[]'
             )
             """
         )
-        conn.commit()
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS tool_cache (
@@ -81,6 +81,7 @@ def init_db() -> None:
             )
             """
         )
+        conn.commit()
 
 
 def save_judge_eval(run_id: str, report: Dict[str, Any]) -> None:
@@ -111,8 +112,11 @@ def save_judge_eval(run_id: str, report: Dict[str, Any]) -> None:
 def load_judge_eval(run_id: str) -> Optional[Dict[str, Any]]:
     init_db()
     with _connect() as conn:
-        row = conn.execute("SELECT report_json FROM judge_evals WHERE run_id = ?", (run_id,)).fetchone()
+        row = conn.execute(
+            "SELECT report_json FROM judge_evals WHERE run_id = ?", (run_id,)
+        ).fetchone()
     return json.loads(row["report_json"]) if row else None
+
 
 def save_run(
     *,
@@ -125,6 +129,7 @@ def save_run(
     steps: List[Dict[str, Any]],
     total_tokens: Optional[int] = None,
     total_cost: Optional[float] = None,
+    memory_used: Optional[List[str]] = None,
 ) -> None:
     """
     Reason:
@@ -136,10 +141,10 @@ def save_run(
     with _connect() as conn:
         conn.execute(
             """
-            INSERT OR REPLACE INTO runs
-            (run_id, created_ts, objective, ok, iterations, final_answer, state_json, steps_json, total_tokens, total_cost)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+    INSERT OR REPLACE INTO runs
+    (run_id, created_ts, objective, ok, iterations, final_answer, state_json, steps_json, total_tokens, total_cost, memory_used_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """,
             (
                 run_id,
                 time.time(),
@@ -151,9 +156,21 @@ def save_run(
                 json.dumps(steps, ensure_ascii=False),
                 total_tokens,
                 total_cost,
+                json.dumps(memory_used or [], ensure_ascii=False),
             ),
         )
         conn.commit()
+
+
+def migrate_db() -> None:
+    init_db()
+    with _connect() as conn:
+        # Add memory_used_json column if missing
+        cols = conn.execute("PRAGMA table_info(runs)").fetchall()
+        col_names = {c["name"] for c in cols}
+        if "memory_used_json" not in col_names:
+            conn.execute("ALTER TABLE runs ADD COLUMN memory_used_json TEXT")
+            conn.commit()
 
 
 def list_runs(limit: int = 20) -> List[Dict[str, Any]]:
@@ -213,7 +230,7 @@ import hashlib
 
 
 def _stable_json(obj: Any) -> str:
-    return json.dumps(obj, sort_keys=True, ensure_ascii=False)
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str)
 
 
 def make_cache_key(tool_name: str, args: Dict[str, Any]) -> str:

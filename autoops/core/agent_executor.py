@@ -1,7 +1,6 @@
 from autoops.infra.logging import log_event
 from autoops.core.agent_schemas import Plan, RunSummary, StepExecution
 from autoops.core.tool_router import ToolRegistry
-from autoops.infra.ids import new_run_id
 
 
 def execute_plan(registry: ToolRegistry, plan: Plan, *, run_id: str) -> RunSummary:
@@ -11,7 +10,7 @@ def execute_plan(registry: ToolRegistry, plan: Plan, *, run_id: str) -> RunSumma
     Benefit:
     - Predictable agent behavior with clean logging and failure handling.
     """
-    run_id = new_run_id()
+    # ✅ Use the run_id passed from run_agent_loop (do NOT overwrite it)
     log_event("agent_run_start", run_id=run_id, objective=plan.objective)
 
     executed_steps: list[StepExecution] = []
@@ -26,9 +25,10 @@ def execute_plan(registry: ToolRegistry, plan: Plan, *, run_id: str) -> RunSumma
             args_keys=list(step.args.keys()),
         )
 
-        result = registry.run(step)  # <-- not compatible yet; we fix in Step 4
+        # Your registry.run() expects something with .tool_name and .args
+        # Plan step likely has these, so this is fine.
+        result = registry.run(step)
 
-        # Step 4 will adapt registry.run() to accept PlanStep or ToolRequest
         executed_steps.append(
             StepExecution(
                 step_id=step.step_id,
@@ -50,7 +50,7 @@ def execute_plan(registry: ToolRegistry, plan: Plan, *, run_id: str) -> RunSumma
 
         if not result.ok:
             overall_ok = False
-            break  # fail-fast for now (safe default)
+            break  # fail-fast for now
 
     summary = RunSummary(objective=plan.objective, ok=overall_ok, steps=executed_steps)
     log_event("agent_run_end", run_id=run_id, ok=summary.ok, steps=len(summary.steps))

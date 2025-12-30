@@ -38,23 +38,45 @@ class ToolRegistry:
         if tool_name not in self._tools:
             return ToolResult(tool_name=tool_name, ok=False, error="Unknown tool")
 
-        fn = self._tools[tool_name]
+        # 1) Cache lookup (best-effort)
+        try:
+            cached = get_cached_tool_result(tool_name, args)
+        except Exception as e:
+            cached = None
+            log_event(
+                "tool_cache_error",
+                tool_name=tool_name,
+                error=f"{type(e).__name__}: {e}",
+            )
 
-        cached = get_cached_tool_result(tool_name, args)
         if cached is not None:
             log_event("tool_cache_hit", tool_name=tool_name)
             return ToolResult(tool_name=tool_name, ok=True, data=cached)
-        else:
-            log_event("tool_cache_miss", tool_name=tool_name)
 
+        log_event("tool_cache_miss", tool_name=tool_name)
+
+        # 2) Execute tool
+        fn = self._tools[tool_name]
         try:
             out = fn(**args)
+
             if not isinstance(out, dict):
                 return ToolResult(
                     tool_name=tool_name, ok=False, error="Tool returned non-dict output"
                 )
+
+            # 3) Cache write (best-effort)
+            try:
                 set_cached_tool_result(tool_name, args, out)
+            except Exception as e:
+                log_event(
+                    "tool_cache_write_error",
+                    tool_name=tool_name,
+                    error=f"{type(e).__name__}: {e}",
+                )
+
             return ToolResult(tool_name=tool_name, ok=True, data=out)
+
         except TypeError as e:
             return ToolResult(
                 tool_name=tool_name, ok=False, error=f"Bad tool args: {e}"
