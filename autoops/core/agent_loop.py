@@ -67,7 +67,7 @@ def run_agent_loop(
     objective: str,
     *,
     max_iterations: int = 3,
-    planner_version: str = "v1",
+    planner_version: str = "v2",
 ) -> AgentRunResult:
     """
     Reason:

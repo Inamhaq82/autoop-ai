@@ -59,22 +59,12 @@ class ToolRegistry:
         fn = self._tools[tool_name]
         try:
             out = fn(**args)
-
             if not isinstance(out, dict):
                 return ToolResult(
                     tool_name=tool_name, ok=False, error="Tool returned non-dict output"
                 )
 
-            # 3) Cache write (best-effort)
-            try:
-                set_cached_tool_result(tool_name, args, out)
-            except Exception as e:
-                log_event(
-                    "tool_cache_write_error",
-                    tool_name=tool_name,
-                    error=f"{type(e).__name__}: {e}",
-                )
-
+            set_cached_tool_result(tool_name, args, out)
             return ToolResult(tool_name=tool_name, ok=True, data=out)
 
         except TypeError as e:

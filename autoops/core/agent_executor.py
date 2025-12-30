@@ -4,12 +4,7 @@ from autoops.core.tool_router import ToolRegistry
 
 
 def execute_plan(registry: ToolRegistry, plan: Plan, *, run_id: str) -> RunSummary:
-    """
-    Reason:
-    - Central executor that runs validated plans step-by-step.
-    Benefit:
-    - Predictable agent behavior with clean logging and failure handling.
-    """
+
     # ✅ Use the run_id passed from run_agent_loop (do NOT overwrite it)
     log_event("agent_run_start", run_id=run_id, objective=plan.objective)
 
