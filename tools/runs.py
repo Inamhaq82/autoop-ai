@@ -1,17 +1,22 @@
 import argparse
 import json
-from autoops.infra.storage import list_runs, load_run
+import datetime as dt
+
+from autoops.infra.storage import (
+    list_runs,
+    load_run,
+    save_eval,
+    load_eval,
+    save_judge_eval,
+    load_judge_eval,
+)
 from autoops.llm.client import OpenAIClient
 from autoops.core.tool_router import ToolRegistry
 from autoops.tools.text_tools import summarize_text_local
 from autoops.core.agent_loop import run_agent_loop
-import datetime as dt
-from autoops.infra.storage import save_eval, load_eval
 from autoops.core.evaluator import evaluate_run
 from autoops.core.judge import judge_run
-from autoops.infra.storage import save_judge_eval, load_judge_eval
 from autoops.core.memory import find_relevant_runs
-
 
 
 def jaccard_similarity(a: str, b: str) -> float:
@@ -25,80 +30,87 @@ def jaccard_similarity(a: str, b: str) -> float:
 
 
 def format_ts(ts: float | None) -> str:
-    """
-    Convert unix timestamp -> human readable local time.
-    """
+    """Convert unix timestamp -> human readable local time."""
     if not ts:
         return "UNKNOWN_TIME"
     return dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def main():
-    # Add Subcommands
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    # list
     p_list = sub.add_parser("list")
     p_list.add_argument("--limit", type=int, default=20)
 
+    # show
     p_show = sub.add_parser("show")
     p_show.add_argument("run_id")
 
+    # replay
     p_replay = sub.add_parser("replay")
     p_replay.add_argument("run_id")
 
+    # compare
     p_cmp = sub.add_parser("compare")
     p_cmp.add_argument("old_run_id")
     p_cmp.add_argument("new_run_id")
 
+    # eval
     p_eval = sub.add_parser("eval")
     p_eval.add_argument("run_id")
     p_eval.add_argument("--budget", type=float, default=0.05)
 
+    # compare_eval
     p_ce = sub.add_parser("compare_eval")
     p_ce.add_argument("old_run_id")
     p_ce.add_argument("new_run_id")
 
+    # gate (evaluator-based regression gate)
     p_gate = sub.add_parser("gate")
     p_gate.add_argument("old_run_id")
     p_gate.add_argument("new_run_id")
     p_gate.add_argument("--max_quality_drop", type=float, default=0.10)
     p_gate.add_argument("--max_cost_increase_pct", type=float, default=50.0)
-    
+
+    # judge (LLM-based judge)
     p_judge = sub.add_parser("judge")
     p_judge.add_argument("run_id")
     p_judge.add_argument("--model", type=str, default="gpt-4o-mini")
 
+    # compare_judge
     p_cj = sub.add_parser("compare_judge")
     p_cj.add_argument("old_run_id")
     p_cj.add_argument("new_run_id")
 
-    p_gj = sub.add_parser("gate_judge")
-    p_gj.add_argument("old_run_id")
-    p_gj.add_argument("new_run_id")
-    p_gj.add_argument("--max_overall_drop", type=float, default=0.10)
-    p_gj.add_argument("--min_safety", type=float, default=0.90)
-    
+    # gate_judge (judge-based regression gate)
+    p_gatej = sub.add_parser("gate_judge")
+    p_gatej.add_argument("run_id")
+    p_gatej.add_argument("--min_overall", type=float, default=0.80)
+    p_gatej.add_argument("--min_correctness", type=float, default=0.85)
+    p_gatej.add_argument("--min_safety", type=float, default=0.95)
+    p_gatej.add_argument("--max_cost", type=float, default=0.05)
+
+    # memory_search
     p_mem = sub.add_parser("memory_search")
     p_mem.add_argument("--objective", required=True)
     p_mem.add_argument("--k", type=int, default=3)
-
-    
-
+    p_mem.add_argument("--scan_limit", type=int, default=50)
 
     args = parser.parse_args()
-# Add Handlers
+
     if args.cmd == "list":
         runs = list_runs(limit=args.limit)
         for r in runs:
             ts = format_ts(r.get("created_ts"))
-            ok = "OK" if r["ok"] else "FAIL"
+            ok = "OK" if r.get("ok") else "FAIL"
             tokens = r.get("total_tokens") or 0
             cost = r.get("total_cost") or 0.0
-        print(f"{ts} | {ok} | iter={r['iterations']} | tok={tokens} | ${cost:.4f}")
-        print(f"  {r['run_id']}")
-        print(f"  {r['objective'][:120]}")
-        print()
+            print(f"{ts} | {ok} | iter={r['iterations']} | tok={tokens} | ${cost:.4f}")
+            print(f"  {r['run_id']}")
+            print(f"  {r['objective'][:120]}")
+            print()
 
     elif args.cmd == "show":
         run = load_run(args.run_id)
@@ -112,6 +124,7 @@ def main():
         if not run:
             print("Run not found")
             return
+
         objective = run["objective"]
 
         client = OpenAIClient()
@@ -129,8 +142,9 @@ def main():
         if not old_run or not new_run:
             print("Run not found")
             return
-        old_ok = bool(old_run["ok"])
-        new_ok = bool(new_run["ok"])
+
+        old_ok = bool(old_run.get("ok"))
+        new_ok = bool(new_run.get("ok"))
 
         old_tokens = old_run.get("total_tokens") or 0
         new_tokens = new_run.get("total_tokens") or 0
@@ -151,7 +165,7 @@ def main():
         print("Tokens:", old_tokens, "->", new_tokens, "Δ", (new_tokens - old_tokens))
         print("Cost:", old_cost, "->", new_cost, "Δ", (new_cost - old_cost))
         print("Final answer similarity (Jaccard):", round(sim, 3))
-        
+
     elif args.cmd == "judge":
         run = load_run(args.run_id)
         if not run:
@@ -170,30 +184,49 @@ def main():
             print("Missing judge report. Run judge on both run_ids first.")
             return
 
-        for k in ["overall", "correctness", "completeness", "concision", "clarity", "safety"]:
+        for k in [
+            "overall",
+            "correctness",
+            "completeness",
+            "concision",
+            "clarity",
+            "safety",
+        ]:
             print(f"{k}: {old[k]:.3f} -> {new[k]:.3f}  Δ {(new[k]-old[k]):+.3f}")
 
     elif args.cmd == "gate_judge":
-        old = load_judge_eval(args.old_run_id)
-        new = load_judge_eval(args.new_run_id)
-        if not old or not new:
-            print("Missing judge report. Run judge on both run_ids first.")
+        report = load_judge_eval(args.run_id)
+        if not report:
+            print("Missing judge report. Run judge on this run_id first.")
             raise SystemExit(2)
 
-        overall_drop = old["overall"] - new["overall"]
-        failed = False
+        run = load_run(args.run_id)
+        if not run:
+            print("Run not found")
+            raise SystemExit(2)
 
-        if overall_drop > args.max_overall_drop:
-            print(f"FAIL: overall dropped by {overall_drop:.3f} (> {args.max_overall_drop:.3f})")
+        cost = float(run.get("total_cost") or 0.0)
+
+        failed = False
+        if report["overall"] < args.min_overall:
+            print(f"FAIL: overall {report['overall']:.3f} (< {args.min_overall:.3f})")
             failed = True
-        if new["safety"] < args.min_safety:
-            print(f"FAIL: safety {new['safety']:.3f} (< {args.min_safety:.3f})")
+        if report["correctness"] < args.min_correctness:
+            print(
+                f"FAIL: correctness {report['correctness']:.3f} (< {args.min_correctness:.3f})"
+            )
+            failed = True
+        if report["safety"] < args.min_safety:
+            print(f"FAIL: safety {report['safety']:.3f} (< {args.min_safety:.3f})")
+            failed = True
+        if cost > args.max_cost:
+            print(f"FAIL: cost ${cost:.4f} (> ${args.max_cost:.4f})")
             failed = True
 
         if failed:
             raise SystemExit(1)
 
-        print("PASS: judge gate ok")
+        print("PASS: gate_judge ok")
 
     elif args.cmd == "eval":
         run = load_run(args.run_id)
@@ -205,8 +238,15 @@ def main():
         print(json.dumps(report, indent=2, ensure_ascii=False))
 
     elif args.cmd == "compare_eval":
-        old = load_eval(args.old_run_id) or evaluate_run(load_run(args.old_run_id))
-        new = load_eval(args.new_run_id) or evaluate_run(load_run(args.new_run_id))
+        old_run = load_run(args.old_run_id)
+        new_run = load_run(args.new_run_id)
+        if not old_run or not new_run:
+            print("Run not found")
+            return
+
+        old = load_eval(args.old_run_id) or evaluate_run(old_run)
+        new = load_eval(args.new_run_id) or evaluate_run(new_run)
+
         print(
             "quality:",
             old["quality_score"],
@@ -241,7 +281,7 @@ def main():
         )
 
     elif args.cmd == "memory_search":
-        mem = find_relevant_runs(args.objective, k=args.k, scan_limit=50)
+        mem = find_relevant_runs(args.objective, k=args.k, scan_limit=args.scan_limit)
         print(json.dumps(mem, indent=2, ensure_ascii=False))
 
     elif args.cmd == "gate":
@@ -254,17 +294,18 @@ def main():
         old = load_eval(args.old_run_id) or evaluate_run(old_run)
         new = load_eval(args.new_run_id) or evaluate_run(new_run)
 
-        # Gates
         quality_drop = old["quality_score"] - new["quality_score"]
-        cost_increase_pct = 0.0
+
         old_cost = float(old_run.get("total_cost") or 0.0)
         new_cost = float(new_run.get("total_cost") or 0.0)
         if old_cost > 0:
             cost_increase_pct = ((new_cost - old_cost) / old_cost) * 100.0
         elif new_cost > 0:
             cost_increase_pct = 999.0
+        else:
+            cost_increase_pct = 0.0
 
-        ok_regressed = bool(old_run["ok"]) and not bool(new_run["ok"])
+        ok_regressed = bool(old_run.get("ok")) and not bool(new_run.get("ok"))
 
         failed = False
         if quality_drop > args.max_quality_drop:
