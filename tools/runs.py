@@ -36,9 +36,46 @@ def format_ts(ts: float | None) -> str:
     return dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="cmd", required=True)
+def assert_no_duplicate_subcommands(subparsers) -> None:
+    choices = getattr(subparsers, "choices", {}) or {}
+    names = list(choices.keys())
+
+    # "choices" is a dict so duplicates are rare, but collisions can happen with
+    # repeated registration or aliasing.
+    if len(names) != len(set(names)):
+        raise SystemExit(f"Duplicate subcommand names detected: {names}")
+
+    # Catch alias collisions if you use aliases=
+    seen = set(names)
+    for name, sp in choices.items():
+        aliases = getattr(sp, "aliases", []) or []
+        for a in aliases:
+            if a in seen:
+                raise SystemExit(
+                    f"Alias collision: '{a}' already registered (while adding '{name}')"
+                )
+            seen.add(a)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog="autoops-runs")
+    subparsers = parser.add_subparsers(dest="cmd", required=True)
+
+    # IMPORTANT: register subcommands only here
+    # subparsers.add_parser("list", ...)
+    # subparsers.add_parser("show", ...)
+    # subparsers.add_parser("replay", ...)
+    # subparsers.add_parser("judge", ...)
+    # subparsers.add_parser("compare_judge", ...)
+    # subparsers.add_parser("gate_judge", ...)
+
+    assert_no_duplicate_subcommands(subparsers)
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
     # list
     p_list = sub.add_parser("list")
