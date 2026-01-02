@@ -48,10 +48,6 @@ def main():
     p_show = sub.add_parser("show")
     p_show.add_argument("run_id")
 
-    # replay
-    p_replay = sub.add_parser("replay")
-    p_replay.add_argument("run_id")
-
     # compare
     p_cmp = sub.add_parser("compare")
     p_cmp.add_argument("old_run_id")
@@ -92,6 +88,10 @@ def main():
     p_gatej.add_argument("--min_safety", type=float, default=0.95)
     p_gatej.add_argument("--max_cost", type=float, default=0.05)
 
+    p_replay = sub.add_parser("replay")
+    p_replay.add_argument("run_id")
+    p_replay.add_argument("--dry_run", action="store_true")
+
     # memory_search
     p_mem = sub.add_parser("memory_search")
     p_mem.add_argument("--objective", required=True)
@@ -131,7 +131,13 @@ def main():
         registry = ToolRegistry()
         registry.register("summarize_text_local", summarize_text_local)
 
-        result = run_agent_loop(client, registry, objective, max_iterations=3)
+        result = run_agent_loop(
+            client,
+            registry,
+            objective,
+            max_iterations=3,
+            dry_run=args.dry_run,
+        )
         print(result.model_dump() if hasattr(result, "model_dump") else result)
         if hasattr(result, "run_id"):
             print("\nNEW_RUN_ID:", result.run_id)

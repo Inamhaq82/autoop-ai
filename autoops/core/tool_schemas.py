@@ -9,9 +9,12 @@ class ToolRequest(BaseModel):
     Benefit:
     - Your router can validate tool calls deterministically.
     """
+
     tool_name: str = Field(description="Name of the tool to execute")
     args: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
-    request_id: Optional[str] = Field(default=None, description="Optional correlation id")
+    request_id: Optional[str] = Field(
+        default=None, description="Optional correlation id"
+    )
 
 
 class ToolResult(BaseModel):
@@ -21,10 +24,11 @@ class ToolResult(BaseModel):
     Benefit:
     - Tools become composable building blocks.
     """
+
     tool_name: str
     ok: bool
-    data: Dict[str, Any] = Field(default_factory=dict)
-    error: Optional[str] = None
+    data: dict | None = None
+    error: str | None = None
 
 
 # Optional: a schema for a known tool output

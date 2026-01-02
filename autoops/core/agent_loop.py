@@ -21,10 +21,7 @@ def deterministic_done_check(
     """
     Deterministic completion checker (no LLM).
 
-    Reason:
-    - Stop conditions are control logic; LLMs are not reliable for control flow.
-    Benefit:
-    - The agent stops as soon as the required fields exist (no hallucinated failures).
+    Stop conditions are control logic; LLMs are not reliable for control flow.
     """
     if not latest_tool_result:
         return DoneCheck(done=False, rationale="No tool result available yet.")
@@ -67,13 +64,11 @@ def run_agent_loop(
     objective: str,
     *,
     max_iterations: int = 3,
+    dry_run: bool = False,
     planner_version: str = "v2",
 ) -> AgentRunResult:
     """
-    Reason:
-    - Implements Plan -> Execute -> Observe -> Replan loop.
-    Benefit:
-    - Agent adapts based on tool results and stops deterministically.
+    Plan -> Execute -> Observe -> Replan loop with deterministic stopping.
     """
     run_id = new_run_id()
 
@@ -85,27 +80,26 @@ def run_agent_loop(
         objective.split(":", 1)[1].strip() if ":" in objective else objective
     )
 
+    # State must exist before any early returns (dry_run)
+    state = AgentState()
+    executed_steps_log: list[dict] = []
+    final_answer: str | None = None
+
     # Retrieve memory once per run
     memories = find_relevant_runs(objective, k=3, scan_limit=50)
     memory_used = [m["run_id"] for m in memories]
     memories_text = format_memories(memories)
 
     log_event(
-        "memory_retrieved",
-        run_id=run_id,
-        count=len(memories),
-        memory_used=memory_used,
+        "memory_retrieved", run_id=run_id, count=len(memories), memory_used=memory_used
     )
-
-    state = AgentState()
-    executed_steps_log: list[dict] = []
-    final_answer: str | None = None
 
     log_event(
         "agent_loop_start",
         run_id=run_id,
         objective=objective,
         max_iterations=max_iterations,
+        dry_run=dry_run,
     )
 
     for iteration in range(1, max_iterations + 1):
@@ -119,9 +113,7 @@ def run_agent_loop(
             objective_payload=objective_payload,
             notes=_format_notes(state.notes),
             last_tool_results=json.dumps(state.last_tool_results, ensure_ascii=False),
-            memories=(
-                "(none)" if iteration == 1 else memories_text
-            ),  # reduce memory hijack on iter 1
+            memories="(none)" if iteration == 1 else memories_text,
         )
 
         plan = client.generate_structured(replanner_prompt, Plan)
@@ -133,39 +125,74 @@ def run_agent_loop(
             steps=len(plan.steps),
         )
 
-        # Hard override for summarize tool args (bulletproof against planner drift)
+        # Validate plan shape early
+        if not plan.steps:
+            state.notes.append("Planner returned empty steps.")
+            if dry_run:
+                return AgentRunResult(
+                    run_id=run_id,
+                    ok=False,
+                    objective=objective,
+                    iterations=iteration,
+                    state=state,
+                    final_answer="[DRY RUN] Empty plan generated.",
+                )
+            continue
+
+        # Hard override + enforce objective payload constraint
         for step in plan.steps:
             if step.tool_name == "summarize_text_local":
                 step.args["text"] = objective_payload
                 step.args["max_sentences"] = 2
 
+        # Strict payload enforcement (exact match)
+        for step in plan.steps:
+            if step.tool_name == "summarize_text_local":
+                if step.args.get("text") != objective_payload:
+                    raise RuntimeError(
+                        "Planner violated objective payload constraint (text mismatch)."
+                    )
+
+        if dry_run:
+            # Do not execute tools, do not save run; just return plan details
+            log_event("dry_run_exit", run_id=run_id, iteration=iteration)
+            return AgentRunResult(
+                run_id=run_id,
+                ok=True,
+                objective=objective,
+                iterations=iteration,
+                state=state,
+                final_answer=f"[DRY RUN] Plan: {plan.model_dump()}",
+            )
+
         # 2) Execute plan
         summary = execute_plan(registry, plan, run_id=run_id)
 
-        # Record executed steps once per iteration
         executed_steps_log.extend([s.model_dump() for s in summary.steps])
 
         # 3) Observe: update state
-        for step in summary.steps:
-            if step.ok:
+        for step_exec in summary.steps:
+            if step_exec.ok:
                 state.last_tool_results.append(
                     {
-                        "step_id": step.step_id,
-                        "tool_name": step.tool_name,
-                        "data": step.data,
-                    }
-                )
-                state.notes.append(f"Step {step.step_id} ({step.tool_name}) succeeded.")
-            else:
-                state.last_tool_results.append(
-                    {
-                        "step_id": step.step_id,
-                        "tool_name": step.tool_name,
-                        "error": step.error,
+                        "step_id": step_exec.step_id,
+                        "tool_name": step_exec.tool_name,
+                        "data": step_exec.data,
                     }
                 )
                 state.notes.append(
-                    f"Step {step.step_id} ({step.tool_name}) failed: {step.error}"
+                    f"Step {step_exec.step_id} ({step_exec.tool_name}) succeeded."
+                )
+            else:
+                state.last_tool_results.append(
+                    {
+                        "step_id": step_exec.step_id,
+                        "tool_name": step_exec.tool_name,
+                        "error": step_exec.error,
+                    }
+                )
+                state.notes.append(
+                    f"Step {step_exec.step_id} ({step_exec.tool_name}) failed: {step_exec.error}"
                 )
 
         log_event(
@@ -179,7 +206,7 @@ def run_agent_loop(
             state.last_tool_results[-1] if state.last_tool_results else None
         )
 
-        # 4) Deterministic done check (no LLM)
+        # 4) Deterministic done check
         done_check = deterministic_done_check(objective, latest_tool_result)
 
         log_event(
@@ -238,6 +265,15 @@ def run_agent_loop(
         total_tokens=getattr(client, "total_tokens", None),
         total_cost=getattr(client, "total_cost", None),
         memory_used=memory_used,
+    )
+
+    log_event(
+        "agent_run_summary",
+        run_id=run_id,
+        ok=result.ok,
+        iterations=result.iterations,
+        total_tokens=getattr(client, "total_tokens", None),
+        total_cost=getattr(client, "total_cost", None),
     )
 
     return result
