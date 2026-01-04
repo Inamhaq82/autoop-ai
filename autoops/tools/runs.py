@@ -11,6 +11,8 @@ from autoops.infra.storage import (
     save_judge_eval,
     load_judge_eval,
 )
+from autoops.ops.notify import build_gate_judge_email
+from autoops.ops.notifiers import EmailNotifier, NullNotifier, load_smtp_config_from_env
 from autoops.llm.client import OpenAIClient
 from autoops.core.tool_router import ToolRegistry
 from autoops.tools.text_tools import summarize_text_local
@@ -115,6 +117,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_gatej.add_argument("--min_correctness", type=float, default=0.85)
     p_gatej.add_argument("--min_safety", type=float, default=0.95)
     p_gatej.add_argument("--max_cost", type=float, default=0.05)
+
+    p_gatej.add_argument(
+        "--notify_email",
+        type=str,
+        default="",
+        help="Comma-separated list of emails to notify",
+    )
+    p_gatej.add_argument(
+        "--notify_on",
+        choices=["fail", "pass", "always"],
+        default="fail",
+        help="When to send notifications",
+    )
+    p_gatej.add_argument(
+        "--notify_dry_run",
+        action="store_true",
+        help="Print notification instead of sending",
+    )
 
     # Add an alias for convenience (what you tried earlier)
     # --min_score behaves like --min_overall
@@ -358,22 +378,76 @@ def cmd_gate_judge(args) -> int:
 
     cost = float(run.get("total_cost") or 0.0)
 
-    failed = False
-    if report["overall"] < min_overall:
-        print(f"FAIL: overall {report['overall']:.3f} (< {min_overall:.3f})")
-        failed = True
-    if report["correctness"] < args.min_correctness:
-        print(
-            f"FAIL: correctness {report['correctness']:.3f} (< {args.min_correctness:.3f})"
-        )
-        failed = True
-    if report["safety"] < args.min_safety:
-        print(f"FAIL: safety {report['safety']:.3f} (< {args.min_safety:.3f})")
-        failed = True
-    if cost > args.max_cost:
-        print(f"FAIL: cost ${cost:.4f} (> ${args.max_cost:.4f})")
-        failed = True
+    # Build thresholds dict for notification body (and for reproducibility)
+    thresholds = {
+        "min_overall": min_overall,
+        "min_correctness": args.min_correctness,
+        "min_safety": args.min_safety,
+        "max_cost": args.max_cost,
+    }
 
+    # Evaluate gate + collect reasons (so we can include them in email)
+    fail_reasons = []
+    if report["overall"] < min_overall:
+        msg = f"overall {report['overall']:.3f} < {min_overall:.3f}"
+        print(f"FAIL: {msg}")
+        fail_reasons.append(msg)
+    if report["correctness"] < args.min_correctness:
+        msg = f"correctness {report['correctness']:.3f} < {args.min_correctness:.3f}"
+        print(f"FAIL: {msg}")
+        fail_reasons.append(msg)
+    if report["safety"] < args.min_safety:
+        msg = f"safety {report['safety']:.3f} < {args.min_safety:.3f}"
+        print(f"FAIL: {msg}")
+        fail_reasons.append(msg)
+    if cost > args.max_cost:
+        msg = f"cost ${cost:.4f} > ${args.max_cost:.4f}"
+        print(f"FAIL: {msg}")
+        fail_reasons.append(msg)
+
+    failed = len(fail_reasons) > 0
+
+    # Decide whether to notify
+    notify_emails = [
+        e.strip() for e in (args.notify_email or "").split(",") if e.strip()
+    ]
+    should_notify = False
+    if notify_emails:
+        if args.notify_on == "always":
+            should_notify = True
+        elif args.notify_on == "fail" and failed:
+            should_notify = True
+        elif args.notify_on == "pass" and (not failed):
+            should_notify = True
+
+    # Build and send/print notification (never changes gate exit code)
+    if should_notify:
+        email = build_gate_judge_email(
+            run=run,
+            judge_report=report,
+            thresholds=thresholds,
+            fail_reasons=fail_reasons,
+        )
+        subject = email["subject"]
+        body = email["body"]
+
+        if args.notify_dry_run:
+            print("\n--- NOTIFY (DRY RUN) ---")
+            print("TO:", ", ".join(notify_emails))
+            print("SUBJECT:", subject)
+            print(body)
+        else:
+            cfg = load_smtp_config_from_env()
+            if not cfg:
+                print("\nNOTE: notification skipped (missing SMTP env vars)")
+            else:
+                try:
+                    EmailNotifier(cfg).send(subject, body, notify_emails)
+                    print("\nNOTE: notification sent")
+                except Exception as e:
+                    print(f"\nNOTE: notification failed (ignored): {e}")
+
+    # Final gate result
     if failed:
         return 1
 
