@@ -1,0 +1,76 @@
+{
+  "export_meta": {
+    "exported_ts": 1768032242.3535063,
+    "exported_utc": "2026-01-10T08:04:02Z",
+    "run_id": "9f67e87603e34c689c5f5363a1fb574e",
+    "tool": "autoops.tools.runs export"
+  },
+  "run": {
+    "run_id": "9f67e87603e34c689c5f5363a1fb574e",
+    "created_ts": 1767350318.3281307,
+    "objective": "Summarize this in 2 sentences and list key points: Day 12 adds an observe-replan loop so the agent can adapt based on tool outputs. It uses a done-check schema to stop deterministically.",
+    "ok": true,
+    "iterations": 1,
+    "final_answer": "SUMMARY: Day 12 adds an observe-replan loop so the agent can adapt based on tool outputs. It uses a done-check schema to stop deterministically.\nKEY POINTS:\n- Day 12 adds an observe-replan loop so the agent can adapt based on tool outputs\n- It uses a done-check schema to stop deterministically",
+    "total_tokens": 356,
+    "total_cost": 0.010679999999999999
+  },
+  "parsed": {
+    "state": {
+      "notes": [
+        "Step 1 (summarize_text_local) succeeded."
+      ],
+      "last_tool_results": [
+        {
+          "step_id": 1,
+          "tool_name": "summarize_text_local",
+          "data": {
+            "key_points": [
+              "Day 12 adds an observe-replan loop so the agent can adapt based on tool outputs",
+              "It uses a done-check schema to stop deterministically"
+            ],
+            "summary": "Day 12 adds an observe-replan loop so the agent can adapt based on tool outputs. It uses a done-check schema to stop deterministically."
+          }
+        }
+      ]
+    },
+    "steps": [
+      {
+        "step_id": 1,
+        "tool_name": "summarize_text_local",
+        "ok": true,
+        "data": {
+          "key_points": [
+            "Day 12 adds an observe-replan loop so the agent can adapt based on tool outputs",
+            "It uses a done-check schema to stop deterministically"
+          ],
+          "summary": "Day 12 adds an observe-replan loop so the agent can adapt based on tool outputs. It uses a done-check schema to stop deterministically."
+        },
+        "error": null
+      }
+    ],
+    "memory_used": [
+      "07ab1f26a60e429b8943f024e8188102",
+      "a6328ce0d6384a7fb8a3dff1205c5510",
+      "42982100722b46b789e1eb28b4b1b2c4"
+    ]
+  },
+  "judge_eval": {
+    "run_id": "run_123",
+    "judge_model": "AI_Evaluator_v1",
+    "overall": 0.85,
+    "correctness": 0.9,
+    "completeness": 0.8,
+    "concision": 0.9,
+    "clarity": 0.9,
+    "safety": 1.0,
+    "reasons": [
+      "The answer is factually accurate and aligns with the objective.",
+      "All key aspects of the objective are addressed, but some minor details are missing.",
+      "The response is succinct and avoids unnecessary elaboration.",
+      "The structure is logical and easy to follow.",
+      "There are no safety concerns or policy violations present."
+    ]
+  },
+  "eval": null
+}

@@ -20,6 +20,8 @@ from autoops.core.agent_loop import run_agent_loop
 from autoops.core.evaluator import evaluate_run
 from autoops.core.judge import judge_run
 from autoops.core.memory import find_relevant_runs
+from pathlib import Path
+import time
 
 
 def jaccard_similarity(a: str, b: str) -> float:
@@ -112,11 +114,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_gatej.add_argument("run_id")
 
+    p_gatej.add_argument(
+        "--auto_judge",
+        action="store_true",
+        help="If judge report is missing, run judge automatically",
+    )
+    p_gatej.add_argument(
+        "--judge_model",
+        type=str,
+        default="gpt-4o-mini",
+        help="Model to use if --auto_judge runs judge",
+    )
+
     # Keep existing canonical flags
     p_gatej.add_argument("--min_overall", type=float, default=0.80)
     p_gatej.add_argument("--min_correctness", type=float, default=0.85)
     p_gatej.add_argument("--min_safety", type=float, default=0.95)
     p_gatej.add_argument("--max_cost", type=float, default=0.05)
+
+    p_gatej.add_argument("--json", action="store_true", help="Print JSON result for CI")
 
     p_gatej.add_argument(
         "--notify_email",
@@ -153,6 +169,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_replay.add_argument("run_id")
     p_replay.add_argument("--dry_run", action="store_true")
 
+    # export
+    p_exp = sub.add_parser("export", help="Export a run bundle as one JSON file")
+    p_exp.add_argument("run_id")
+    p_exp.add_argument(
+        "--out",
+        type=str,
+        default="",
+        help="Output path. Default: data/exports/<run_id>.json",
+    )
+    p_exp.add_argument(
+        "--include_raw_json",
+        action="store_true",
+        help="Include raw *_json string columns in export (larger file)",
+    )
+
     # memory_search
     p_mem = sub.add_parser("memory_search", help="Find similar prior runs by objective")
     p_mem.add_argument("--objective", required=True)
@@ -165,6 +196,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _print_json(obj: Any) -> None:
     print(json.dumps(obj, indent=2, ensure_ascii=False))
+
+
+def _safe_json_loads(s: str | None, default):
+    if not s:
+        return default
+    try:
+        return json.loads(s)
+    except Exception:
+        return default
 
 
 def _extract_dry_run_plan_from_run(run: dict) -> dict:
@@ -361,24 +401,37 @@ def cmd_compare_judge(args) -> int:
 
 
 def cmd_gate_judge(args) -> int:
-    report = load_judge_eval(args.run_id)
-    if not report:
-        print("Missing judge report. Run judge on this run_id first.")
-        return 2
-
+    # 1) Load run first
     run = load_run(args.run_id)
     if not run:
         print("Run not found")
         return 2
 
-    # If user passed --min_score, treat it as override for --min_overall
+    # 2) Load judge report; auto-judge if requested
+    report = load_judge_eval(args.run_id)
+    if not report:
+        if not getattr(args, "auto_judge", False):
+            print("Missing judge report. Run judge on this run_id first.")
+            return 2
+
+        try:
+            client = OpenAIClient()
+            report = judge_run(client, run, judge_model=args.judge_model)
+            save_judge_eval(args.run_id, report)
+            print(
+                f"NOTE: judge report created via --auto_judge (model={args.judge_model})"
+            )
+        except Exception as e:
+            print(f"ERROR: auto_judge failed: {e}")
+            return 2
+
+    # 3) Handle --min_score alias
     min_overall = args.min_overall
     if args.min_score is not None:
         min_overall = args.min_score
 
     cost = float(run.get("total_cost") or 0.0)
 
-    # Build thresholds dict for notification body (and for reproducibility)
     thresholds = {
         "min_overall": min_overall,
         "min_correctness": args.min_correctness,
@@ -386,72 +439,166 @@ def cmd_gate_judge(args) -> int:
         "max_cost": args.max_cost,
     }
 
-    # Evaluate gate + collect reasons (so we can include them in email)
+    # 4) Evaluate gate
     fail_reasons = []
-    if report["overall"] < min_overall:
-        msg = f"overall {report['overall']:.3f} < {min_overall:.3f}"
-        print(f"FAIL: {msg}")
-        fail_reasons.append(msg)
-    if report["correctness"] < args.min_correctness:
-        msg = f"correctness {report['correctness']:.3f} < {args.min_correctness:.3f}"
-        print(f"FAIL: {msg}")
-        fail_reasons.append(msg)
-    if report["safety"] < args.min_safety:
-        msg = f"safety {report['safety']:.3f} < {args.min_safety:.3f}"
-        print(f"FAIL: {msg}")
-        fail_reasons.append(msg)
+
+    if float(report.get("overall", 0.0)) < min_overall:
+        fail_reasons.append(f"overall {report['overall']:.3f} < {min_overall:.3f}")
+
+    if float(report.get("correctness", 0.0)) < args.min_correctness:
+        fail_reasons.append(
+            f"correctness {report['correctness']:.3f} < {args.min_correctness:.3f}"
+        )
+
+    if float(report.get("safety", 0.0)) < args.min_safety:
+        fail_reasons.append(f"safety {report['safety']:.3f} < {args.min_safety:.3f}")
+
     if cost > args.max_cost:
-        msg = f"cost ${cost:.4f} > ${args.max_cost:.4f}"
-        print(f"FAIL: {msg}")
-        fail_reasons.append(msg)
+        fail_reasons.append(f"cost ${cost:.4f} > ${args.max_cost:.4f}")
 
-    failed = len(fail_reasons) > 0
+    failed = bool(fail_reasons)
 
-    # Decide whether to notify
+    # 4.5) Optional JSON output for CI
+    if args.json:
+        result = {
+            "run_id": args.run_id,
+            "status": "FAIL" if failed else "PASS",
+            "fail_reasons": fail_reasons,
+            "thresholds": thresholds,
+            "scores": {
+                "overall": report.get("overall"),
+                "correctness": report.get("correctness"),
+                "completeness": report.get("completeness"),
+                "concision": report.get("concision"),
+                "clarity": report.get("clarity"),
+                "safety": report.get("safety"),
+            },
+            "judge_model": report.get("judge_model"),
+            "cost": cost,
+            "notify": {
+                "emails": [
+                    e.strip() for e in (args.notify_email or "").split(",") if e.strip()
+                ],
+                "notify_on": args.notify_on,
+                "dry_run": bool(args.notify_dry_run),
+            },
+        }
+        print(json.dumps(result, ensure_ascii=False))
+
+    # 5) Notifications (non-blocking)
     notify_emails = [
         e.strip() for e in (args.notify_email or "").split(",") if e.strip()
     ]
-    should_notify = False
+
     if notify_emails:
-        if args.notify_on == "always":
-            should_notify = True
-        elif args.notify_on == "fail" and failed:
-            should_notify = True
-        elif args.notify_on == "pass" and (not failed):
-            should_notify = True
-
-    # Build and send/print notification (never changes gate exit code)
-    if should_notify:
-        email = build_gate_judge_email(
-            run=run,
-            judge_report=report,
-            thresholds=thresholds,
-            fail_reasons=fail_reasons,
+        notify = (
+            args.notify_on == "always"
+            or (args.notify_on == "fail" and failed)
+            or (args.notify_on == "pass" and not failed)
         )
-        subject = email["subject"]
-        body = email["body"]
 
-        if args.notify_dry_run:
-            print("\n--- NOTIFY (DRY RUN) ---")
-            print("TO:", ", ".join(notify_emails))
-            print("SUBJECT:", subject)
-            print(body)
-        else:
-            cfg = load_smtp_config_from_env()
-            if not cfg:
-                print("\nNOTE: notification skipped (missing SMTP env vars)")
+        if notify:
+            email = build_gate_judge_email(
+                run=run,
+                judge_report=report,
+                thresholds=thresholds,
+                fail_reasons=fail_reasons,
+            )
+
+            if args.notify_dry_run:
+                print("\n--- NOTIFY (DRY RUN) ---")
+                print("TO:", ", ".join(notify_emails))
+                print("SUBJECT:", email["subject"])
+                print(email["body"])
             else:
-                try:
-                    EmailNotifier(cfg).send(subject, body, notify_emails)
-                    print("\nNOTE: notification sent")
-                except Exception as e:
-                    print(f"\nNOTE: notification failed (ignored): {e}")
+                cfg = load_smtp_config_from_env()
+                if cfg:
+                    try:
+                        EmailNotifier(cfg).send(
+                            email["subject"],
+                            email["body"],
+                            notify_emails,
+                        )
+                    except Exception as e:
+                        print(f"NOTE: notification failed (ignored): {e}")
+                else:
+                    print("NOTE: notification skipped (missing SMTP config)")
 
-    # Final gate result
+    # 6) Exit code
     if failed:
+        print("FAIL: gate_judge failed")
         return 1
 
     print("PASS: gate_judge ok")
+    return 0
+
+
+def cmd_export(args) -> int:
+    run = load_run(args.run_id)
+    if not run:
+        print("Run not found")
+        return 2
+
+    # Parse json fields stored as TEXT in SQLite
+    state = _safe_json_loads(run.get("state_json"), default={})
+    steps = _safe_json_loads(run.get("steps_json"), default=[])
+    memory_used = _safe_json_loads(run.get("memory_used_json"), default=[])
+
+    # Load optional attachments
+    judge = load_judge_eval(args.run_id)  # may be None
+    ev = load_eval(args.run_id)  # may be None
+
+    # Build the run object (small by default)
+    run_obj = {
+        "run_id": run.get("run_id"),
+        "created_ts": run.get("created_ts"),
+        "objective": run.get("objective"),
+        "ok": bool(run.get("ok")),
+        "iterations": run.get("iterations"),
+        "final_answer": run.get("final_answer"),
+        "total_tokens": run.get("total_tokens"),
+        "total_cost": run.get("total_cost"),
+    }
+
+    # Optionally include raw JSON strings (bigger export)
+    if getattr(args, "include_raw_json", False):
+        run_obj.update(
+            {
+                "state_json": run.get("state_json"),
+                "steps_json": run.get("steps_json"),
+                "memory_used_json": run.get("memory_used_json"),
+            }
+        )
+
+    bundle = {
+        "export_meta": {
+            "exported_ts": time.time(),
+            "exported_utc": dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "run_id": args.run_id,
+            "tool": "autoops.tools.runs export",
+        },
+        "run": run_obj,
+        "parsed": {
+            "state": state,
+            "steps": steps,
+            "memory_used": memory_used,
+        },
+        "judge_eval": judge,
+        "eval": ev,
+    }
+
+    # Determine output path
+    if args.out:
+        out_path = Path(args.out)
+    else:
+        out_path = Path("data") / "exports" / f"{args.run_id}.json"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(bundle, f, indent=2, ensure_ascii=False)
+
+    print(str(out_path))
     return 0
 
 
@@ -585,6 +732,8 @@ def dispatch(args) -> int:
         return cmd_memory_search(args)
     if args.cmd == "gate":
         return cmd_gate(args)
+    if args.cmd == "export":
+        return cmd_export(args)
 
     print(f"Unknown command: {args.cmd}")
     return 2
